@@ -64,7 +64,7 @@ export default function ManagerDashboard() {
       fetchFacilities();
       setNewFacility({ facility_name: '', sport_type: '', price_per_hour: '' });
       setTimeout(() => setSuccess(''), 3000);
-    } catch(err) { setError('Failed to create facility'); setTimeout(() => setError(''), 3000); }
+    } catch(err) { setError(err.response?.data?.error || err.response?.statusText || 'Failed to create facility'); setTimeout(() => setError(''), 4000); }
   };
 
   const handleCreateEquipment = async (e) => {
@@ -75,7 +75,7 @@ export default function ManagerDashboard() {
       fetchEquipment();
       setNewEq({ equipment_name: '', quantity: '', rental_price: '' });
       setTimeout(() => setSuccess(''), 3000);
-    } catch(err) { setError('Failed to add equipment'); setTimeout(() => setError(''), 3000); }
+    } catch(err) { setError(err.response?.data?.error || err.response?.statusText || 'Failed to add equipment'); setTimeout(() => setError(''), 4000); }
   };
 
   const logout = () => {
