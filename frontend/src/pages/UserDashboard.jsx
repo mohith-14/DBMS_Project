@@ -19,6 +19,7 @@ export default function UserDashboard() {
   // Selection States
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedFacility, setSelectedFacility] = useState(null);
+  const [selectedRentalSlotId, setSelectedRentalSlotId] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -34,10 +35,10 @@ export default function UserDashboard() {
   }, [navigate]);
 
   useEffect(() => {
-    if (user && activeTab === 'myactivity') {
+    if (user) {
       fetchMyActivity();
     }
-  }, [activeTab, user]);
+  }, [user]);
 
   const fetchFacilities = async () => {
     try {
@@ -110,18 +111,27 @@ export default function UserDashboard() {
   };
 
   const handleRentEquipment = async (eq) => {
+     if (!selectedRentalSlotId) {
+        setError('Please select a booked slot to attach the equipment to.');
+        setTimeout(() => setError(''), 3000);
+        return;
+     }
+     
      try {
        await axios.post('http://localhost:5000/api/rentals', {
          user_id: user.user_id,
          equipment_id: eq.equipment_id,
          rental_date: new Date().toISOString().split('T')[0],
-         quantity: 1
+         quantity: 1,
+         slot_id: selectedRentalSlotId
        });
        setSuccess(`Rented 1 ${eq.equipment_name} successfully!`);
        fetchEquipment(); // refresh quantity
+       fetchMyActivity();
        setTimeout(() => setSuccess(''), 3000);
      } catch(e) {
-        setError('Failed to rent equipment');
+        setError(e.response?.data?.message || 'Failed to rent equipment');
+        setTimeout(() => setError(''), 3000);
      }
   };
 
@@ -203,7 +213,20 @@ export default function UserDashboard() {
 
         {activeTab === 'equipment' && (
           <div className="glass-panel p-2">
-            <h3>Available Equipment</h3>
+            <div className="panel-header" style={{flexDirection: 'column', alignItems: 'flex-start', gap: '1rem', marginBottom: '2rem'}}>
+               <h3>Available Equipment</h3>
+               <div style={{display: 'flex', gap: '1rem', alignItems: 'center'}}>
+                 <label>Attach to Slot:</label>
+                 <select className="input-field" value={selectedRentalSlotId} onChange={(e) => setSelectedRentalSlotId(e.target.value)}>
+                   <option value="">-- Choose your booking --</option>
+                   {myBookings.filter(b => b.booking_status !== 'cancelled').map(b => (
+                     <option key={b.booking_id} value={b.slot_id}>
+                       {b.facility_name} ({b.date.substring(0,10)} at {b.start_time.substring(0,5)})
+                     </option>
+                   ))}
+                 </select>
+               </div>
+            </div>
             <div className="card-grid">
                {equipment.map(eq => (
                  <div key={eq.equipment_id} className="card equipment-card">
@@ -253,7 +276,13 @@ export default function UserDashboard() {
                      <div key={r.rental_id} className="activity-card">
                        <div>
                          <h4>{r.equipment_name} (x{r.quantity})</h4>
-                         <p className="text-muted">Rented on: {r.rental_date.substring(0,10)}</p>
+                         <p className="text-muted">
+                           Rented on: {r.rental_date.substring(0,10)}
+                           <br/>Slot: {r.slot_date?.substring(0,10)} at {r.start_time?.substring(0,5)}
+                         </p>
+                         <p className={`status ${r.status === 'returned' ? 'text-muted' : 'text-gradient'}`}>
+                           {r.status?.toUpperCase() || 'ACTIVE'}
+                         </p>
                        </div>
                      </div>
                    ))}

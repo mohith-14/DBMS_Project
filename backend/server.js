@@ -71,7 +71,8 @@ app.get('/api/slots/:facilityId', async (req, res) => {
     const { facilityId } = req.params;
     const { date } = req.query; // optional date filter
     try {
-        let query = 'SELECT * FROM Slot WHERE facility_id = ? AND availability_status = "available"';
+        // Prevent booking slots that have already started/passed
+        let query = 'SELECT * FROM Slot WHERE facility_id = ? AND availability_status = "available" AND TIMESTAMP(date, start_time) > NOW()';
         let params = [facilityId];
         if (date) {
             query += ' AND date = ?';
@@ -141,7 +142,7 @@ app.delete('/api/bookings/:bookingId', async (req, res) => {
     try {
         // Verify 24h cancellation limit
         const [bookingInfo] = await db.execute(
-            `SELECT s.date as slot_date, s.start_time, b.slot_id 
+            `SELECT s.date as slot_date, s.start_time, b.slot_id, b.user_id 
              FROM Booking b 
              JOIN Slot s ON b.slot_id = s.slot_id 
              WHERE b.booking_id = ?`, [req.params.bookingId]
@@ -159,11 +160,21 @@ app.delete('/api/bookings/:bookingId', async (req, res) => {
             return res.status(400).json({ message: 'Cannot cancel slots less than 24 hours before the start time.' });
         }
         
-        // Allowed to cancel
+        // Allowed to cancel: First, return any rented equipment attached to this slot!
+        const [rentals] = await db.execute(
+            `SELECT rental_id, quantity, equipment_id FROM Rental WHERE slot_id = ? AND user_id = ? AND status = 'active'`,
+            [bookingInfo[0].slot_id, bookingInfo[0].user_id]
+        );
+        for (let r of rentals) {
+            await db.execute('UPDATE Equipment SET quantity = quantity + ? WHERE equipment_id = ?', [r.quantity, r.equipment_id]);
+            await db.execute('UPDATE Rental SET status = "cancelled" WHERE rental_id = ?', [r.rental_id]);
+        }
+
+        // Now cancel the booking itself
         await db.execute('UPDATE Slot SET availability_status = "available" WHERE slot_id = ?', [bookingInfo[0].slot_id]);
         await db.execute('UPDATE Booking SET booking_status = "cancelled" WHERE booking_id = ?', [req.params.bookingId]);
         
-        res.json({ message: 'Booking cancelled successfully.' });
+        res.json({ message: 'Booking and associated equipment cancelled successfully.' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -174,6 +185,20 @@ app.delete('/api/bookings/:bookingId', async (req, res) => {
 // ==========================================
 app.get('/api/equipment', async (req, res) => {
     try {
+        // Auto-return expired rentals back to inventory
+        const [expiredRentals] = await db.execute(`
+            SELECT r.rental_id, r.equipment_id, r.quantity 
+            FROM Rental r
+            JOIN Slot s ON r.slot_id = s.slot_id
+            WHERE r.status = 'active'
+            AND TIMESTAMP(s.date, s.end_time) < NOW()
+        `);
+
+        for (let rental of expiredRentals) {
+            await db.execute('UPDATE Equipment SET quantity = quantity + ? WHERE equipment_id = ?', [rental.quantity, rental.equipment_id]);
+            await db.execute('UPDATE Rental SET status = "returned" WHERE rental_id = ?', [rental.rental_id]);
+        }
+
         const [equipment] = await db.execute('SELECT * FROM Equipment');
         res.json(equipment);
     } catch (err) {
@@ -195,14 +220,23 @@ app.post('/api/equipment', async (req, res) => {
 });
 
 app.post('/api/rentals', async (req, res) => {
-    const { user_id, equipment_id, rental_date, quantity } = req.body;
+    const { user_id, equipment_id, rental_date, quantity, slot_id } = req.body;
     try {
+        if (!slot_id) return res.status(400).json({ message: 'A booked slot is required to rent equipment.' });
+        
+        // Strict availability check
+        const [equip] = await db.execute('SELECT quantity FROM Equipment WHERE equipment_id = ?', [equipment_id]);
+        if (equip.length === 0) return res.status(404).json({ message: 'Equipment not found' });
+        if (equip[0].quantity < quantity) {
+            return res.status(400).json({ message: 'Not enough equipment available in stock right now.' });
+        }
+
         // Decrease capacity
         await db.execute('UPDATE Equipment SET quantity = quantity - ? WHERE equipment_id = ?', [quantity, equipment_id]);
         
         const [result] = await db.execute(
-            'INSERT INTO Rental (rental_date, quantity, user_id, equipment_id) VALUES (?, ?, ?, ?)',
-            [rental_date, quantity, user_id, equipment_id]
+            'INSERT INTO Rental (rental_date, quantity, user_id, equipment_id, slot_id, status) VALUES (?, ?, ?, ?, ?, "active")',
+            [rental_date, quantity, user_id, equipment_id, slot_id]
         );
         res.json({ message: 'Equipment rented successfully', rentalId: result.insertId });
     } catch (err) {
@@ -213,10 +247,11 @@ app.post('/api/rentals', async (req, res) => {
 app.get('/api/user/:userId/rentals', async (req, res) => {
     try {
         const [rentals] = await db.execute(
-            `SELECT r.*, e.equipment_name, e.rental_price 
+            `SELECT r.*, e.equipment_name, e.rental_price, s.date as slot_date, s.start_time, s.end_time 
              FROM Rental r 
              JOIN Equipment e ON r.equipment_id = e.equipment_id 
-             WHERE r.user_id = ?`,
+             JOIN Slot s ON r.slot_id = s.slot_id
+             WHERE r.user_id = ? ORDER BY r.rental_id DESC`,
             [req.params.userId]
         );
         res.json(rentals);
